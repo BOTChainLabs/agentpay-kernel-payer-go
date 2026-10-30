@@ -83,13 +83,20 @@ func (c *Client) EnsureReady(ctx context.Context, in ReadyInput) (ReadyResult, e
 // payment-authorizations(auto_setup) and retries with PAYMENT-SIGNATURE.
 // Non-402 responses return attempt=nil. pending/unknown responses still return
 // the attempt so callers can Retry without creating a new intent.
-func (c *Client) FetchWithPayment(ctx context.Context, req *http.Request) (*http.Response, *PaymentAttempt, error) {
+//
+// Optional FetchOption values:
+//   - WithPaymentIntentID: stable Wallet idempotency / approval key (recommended
+//     for durable callers such as memex invocation_id)
+//   - WithConsentEvidenceID: per-call consent evidence override
+//   - WithOnSigned: persist before the paid request is sent; error aborts send
+func (c *Client) FetchWithPayment(ctx context.Context, req *http.Request, opts ...FetchOption) (*http.Response, *PaymentAttempt, error) {
 	if c == nil {
 		return nil, nil, wrapError(CodeConfigInvalid, ErrConfigInvalid, "nil client")
 	}
 	if req == nil {
 		return nil, nil, wrapError(CodeConfigInvalid, ErrConfigInvalid, "request is required")
 	}
+	fo := applyFetchOptions(opts...)
 	snap, err := snapshotRequest(req)
 	if err != nil {
 		return nil, nil, err
@@ -130,15 +137,20 @@ func (c *Client) FetchWithPayment(ctx context.Context, req *http.Request) (*http
 		return nil, nil, err
 	}
 
-	intentID := newIntentID()
+	intentID, err := resolvePaymentIntentID(fo.paymentIntentID)
+	if err != nil {
+		return nil, nil, err
+	}
+	consentEvidence := firstNonEmpty(
+		strings.TrimSpace(fo.consentEvidenceID),
+		strings.TrimSpace(c.cfg.ConsentEvidenceID),
+		intentID,
+	)
 	consent := Consent{
 		Type:       c.cfg.consentType(),
-		EvidenceID: firstNonEmpty(strings.TrimSpace(c.cfg.ConsentEvidenceID), intentID),
+		EvidenceID: consentEvidence,
 	}
-	approvalKey := "payment-approval:" + intentID
-	if len(approvalKey) > 128 {
-		approvalKey = approvalKey[:128]
-	}
+	approvalKey := paymentApprovalIdempotencyKey(intentID)
 	approval, err := c.wallet.createApproval(ctx, c.cfg.WalletID, approvalKey, contextToken, consent)
 	if err != nil {
 		return nil, nil, err
@@ -159,11 +171,51 @@ func (c *Client) FetchWithPayment(ctx context.Context, req *http.Request) (*http
 		PaymentPayload:  append(json.RawMessage(nil), auth.PaymentPayload...),
 		SignatureHeader: signature,
 	}
+	if fo.onSigned != nil {
+		if err := fo.onSigned(ctx, attempt); err != nil {
+			return nil, attempt, wrapError(CodeOnSignedFailed, ErrOnSignedFailed, "on-signed hook failed: %v", err)
+		}
+	}
 	paid, err := c.doSnapshot(ctx, snap, signature)
 	if err != nil {
 		return nil, attempt, wrapError(CodePaymentUnknown, ErrPaymentUnknown, "paid request transport failed: %v", err)
 	}
 	return paid, attempt, nil
+}
+
+func applyFetchOptions(opts ...FetchOption) fetchOptions {
+	var fo fetchOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&fo)
+		}
+	}
+	return fo
+}
+
+// Wallet Idempotency-Key max is 128. Approval keys are "payment-approval:{id}",
+// so an explicit intent id must fit without silent truncation (collision risk).
+const (
+	maxIdempotencyKeyLen           = 128
+	paymentApprovalKeyPrefix       = "payment-approval:"
+	maxExplicitPaymentIntentIDLen  = maxIdempotencyKeyLen - len(paymentApprovalKeyPrefix) // 111
+)
+
+func resolvePaymentIntentID(explicit string) (string, error) {
+	id := strings.TrimSpace(explicit)
+	if id == "" {
+		return newIntentID(), nil
+	}
+	if len(id) > maxExplicitPaymentIntentIDLen {
+		return "", wrapError(CodeConfigInvalid, ErrConfigInvalid,
+			"PaymentIntentID exceeds %d bytes (must fit under Idempotency-Key 128 with %q prefix)",
+			maxExplicitPaymentIntentIDLen, paymentApprovalKeyPrefix)
+	}
+	return id, nil
+}
+
+func paymentApprovalIdempotencyKey(intentID string) string {
+	return paymentApprovalKeyPrefix + intentID
 }
 
 // Retry replays the stored PAYMENT-SIGNATURE against the original request.

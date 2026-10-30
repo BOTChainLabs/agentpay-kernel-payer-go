@@ -585,6 +585,192 @@ func TestFetchWithPaymentProjectWalletOmitsPreflightAPIKey(t *testing.T) {
 	}
 }
 
+func TestResolvePaymentIntentIDRejectsTooLongWithoutTruncation(t *testing.T) {
+	long := strings.Repeat("a", maxExplicitPaymentIntentIDLen+1)
+	_, err := resolvePaymentIntentID(long)
+	if err == nil {
+		t.Fatal("expected error for oversized PaymentIntentID")
+	}
+	var pe *Error
+	if !errors.As(err, &pe) || pe.Code != CodeConfigInvalid {
+		t.Fatalf("err=%v", err)
+	}
+	key := paymentApprovalIdempotencyKey(strings.Repeat("b", maxExplicitPaymentIntentIDLen))
+	if len(key) != maxIdempotencyKeyLen {
+		t.Fatalf("approval key len=%d want %d", len(key), maxIdempotencyKeyLen)
+	}
+}
+
+func TestFetchWithPaymentUsesStableIntentAndOnSignedBeforePaidRequest(t *testing.T) {
+	const intentID = "inv_stable_001"
+	var (
+		approvalKey string
+		authKey     string
+		consentBody map[string]any
+		paidHits    atomic.Int32
+		hookAuthID  string
+		hookBefore  atomic.Bool
+	)
+	wallet := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/v1/wallets/wal_1"):
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"wallet_id": "wal_1", "external_agent_id": "agent_1",
+				"account_address": "0x1111111111111111111111111111111111111111",
+			})
+		case strings.HasSuffix(r.URL.Path, "/payment-approvals"):
+			approvalKey = r.Header.Get("Idempotency-Key")
+			_ = json.NewDecoder(r.Body).Decode(&consentBody)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"approval_token": "approval.jwt", "approval_id": "approval_1",
+			})
+		case strings.HasSuffix(r.URL.Path, "/payment-authorizations"):
+			authKey = r.Header.Get("Idempotency-Key")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"authorization_id": "auth_stable",
+				"status":           "SIGNED",
+				"payment_payload":  map[string]any{"x402Version": 2},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer wallet.Close()
+	agentPay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": map[string]any{"ready": true, "payment_context_token": "context.jwt"},
+		})
+	}))
+	defer agentPay.Close()
+	var providerURL string
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(PaymentSignatureHeader) == "" {
+			raw, _ := json.Marshal(paymentRequiredFixture(providerURL + "/demo/paid-echo"))
+			w.Header().Set(PaymentRequiredHeader, base64.StdEncoding.EncodeToString(raw))
+			w.WriteHeader(http.StatusPaymentRequired)
+			return
+		}
+		if !hookBefore.Load() {
+			t.Fatal("paid request arrived before OnSigned completed")
+		}
+		paidHits.Add(1)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer provider.Close()
+	providerURL = provider.URL
+
+	client, err := New(Config{
+		WalletBaseURL: wallet.URL, AgentPayBaseURL: agentPay.URL,
+		APIKey: "wallet-key", WalletID: "wal_1", HTTPClient: &http.Client{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest(http.MethodPost, provider.URL+"/demo/paid-echo", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	res, attempt, err := client.FetchWithPayment(context.Background(), req,
+		WithPaymentIntentID(intentID),
+		WithConsentEvidenceID(intentID),
+		WithOnSigned(func(_ context.Context, a *PaymentAttempt) error {
+			hookAuthID = a.AuthorizationID
+			hookBefore.Store(true)
+			return nil
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if approvalKey != "payment-approval:"+intentID {
+		t.Fatalf("approval idempotency=%q", approvalKey)
+	}
+	if authKey != intentID {
+		t.Fatalf("authorization idempotency=%q", authKey)
+	}
+	consent, _ := consentBody["consent"].(map[string]any)
+	if consent["evidence_id"] != intentID {
+		t.Fatalf("consent=%v", consentBody)
+	}
+	if attempt == nil || attempt.IdempotencyKey != intentID || attempt.AuthorizationID != "auth_stable" {
+		t.Fatalf("attempt=%+v", attempt)
+	}
+	if hookAuthID != "auth_stable" || paidHits.Load() != 1 {
+		t.Fatalf("hookAuthID=%q paidHits=%d", hookAuthID, paidHits.Load())
+	}
+}
+
+func TestFetchWithPaymentOnSignedErrorAbortsPaidRequest(t *testing.T) {
+	var paidHits atomic.Int32
+	wallet := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/v1/wallets/wal_1"):
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"wallet_id": "wal_1", "external_agent_id": "agent_1",
+				"account_address": "0x1111111111111111111111111111111111111111",
+			})
+		case strings.HasSuffix(r.URL.Path, "/payment-approvals"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"approval_token": "a", "approval_id": "approval_1"})
+		case strings.HasSuffix(r.URL.Path, "/payment-authorizations"):
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"authorization_id": "auth_abort", "status": "SIGNED",
+				"payment_payload": map[string]any{"x402Version": 2},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer wallet.Close()
+	agentPay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": map[string]any{"ready": true, "payment_context_token": "context.jwt"},
+		})
+	}))
+	defer agentPay.Close()
+	var providerURL string
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(PaymentSignatureHeader) == "" {
+			raw, _ := json.Marshal(paymentRequiredFixture(providerURL + "/demo/paid-echo"))
+			w.Header().Set(PaymentRequiredHeader, base64.StdEncoding.EncodeToString(raw))
+			w.WriteHeader(http.StatusPaymentRequired)
+			return
+		}
+		paidHits.Add(1)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer provider.Close()
+	providerURL = provider.URL
+
+	client, err := New(Config{
+		WalletBaseURL: wallet.URL, AgentPayBaseURL: agentPay.URL,
+		APIKey: "wallet-key", WalletID: "wal_1", HTTPClient: &http.Client{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest(http.MethodPost, provider.URL+"/demo/paid-echo", strings.NewReader(`{}`))
+	res, attempt, err := client.FetchWithPayment(context.Background(), req,
+		WithPaymentIntentID("inv_abort"),
+		WithOnSigned(func(context.Context, *PaymentAttempt) error {
+			return errors.New("db write failed")
+		}),
+	)
+	if res != nil {
+		t.Fatal("expected nil response when OnSigned fails")
+	}
+	if attempt == nil || attempt.AuthorizationID != "auth_abort" {
+		t.Fatalf("attempt=%+v", attempt)
+	}
+	var pe *Error
+	if !errors.As(err, &pe) || pe.Code != CodeOnSignedFailed || !errors.Is(err, ErrOnSignedFailed) {
+		t.Fatalf("err=%v", err)
+	}
+	if paidHits.Load() != 0 {
+		t.Fatalf("paid request must not be sent, hits=%d", paidHits.Load())
+	}
+}
+
 func paymentRequiredFixture(resourceURL string) map[string]any {
 	return map[string]any{
 		"x402Version": 2,

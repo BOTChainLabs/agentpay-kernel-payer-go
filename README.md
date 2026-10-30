@@ -7,7 +7,7 @@ The SDK handles `402 Payment Required` → AgentPay Preflight → Wallet `paymen
 ## Install
 
 ```bash
-go get github.com/BOTChainLabs/agentpay-kernel-payer-go@v0.1.0
+go get github.com/BOTChainLabs/agentpay-kernel-payer-go@v0.1.1
 ```
 
 During local development next to `wallet-service`, you may `replace` to a local checkout. Published consumers must depend on a git tag, not `replace`.
@@ -61,6 +61,15 @@ func main() {
     req.Header.Set("Content-Type", "application/json")
     req.Header.Set("Accept", "application/json")
 
+    // Durable callers (for example a server-side invocation id) should pass a
+    // stable intent and persist AuthorizationID before the paid request is sent:
+    //
+    // res, attempt, err := client.FetchWithPayment(ctx, req,
+    //     agentpaypayer.WithPaymentIntentID(invocationID),
+    //     agentpaypayer.WithOnSigned(func(ctx context.Context, a *agentpaypayer.PaymentAttempt) error {
+    //         return saveAuthorizationID(ctx, a.AuthorizationID)
+    //     }),
+    // )
     res, attempt, err := client.FetchWithPayment(context.Background(), req)
     if err != nil {
         panic(err)
@@ -75,6 +84,14 @@ func main() {
     }
 }
 ```
+
+### Durable callers
+
+| Option | Purpose |
+| --- | --- |
+| `WithPaymentIntentID` | Stable Wallet Idempotency-Key / `payment-approval:{id}` suffix (explicit id ≤111 bytes; longer ids are rejected) |
+| `WithConsentEvidenceID` | Per-call consent evidence (defaults to intent id) |
+| `WithOnSigned` | Persist after SIGNED, before `PAYMENT-SIGNATURE`; error aborts send |
 
 ### Wallet auth modes
 

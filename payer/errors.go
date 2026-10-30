@@ -21,6 +21,7 @@ const (
 	CodeWalletNotReady            = "WALLET_NOT_READY"
 	CodeRetryInvalid              = "RETRY_INVALID"
 	CodePaymentUnknown            = "PAYMENT_UNKNOWN"
+	CodeOnSignedFailed            = "ON_SIGNED_FAILED"
 )
 
 var (
@@ -36,6 +37,7 @@ var (
 	ErrSetupInProgress           = errors.New("permit2 setup is still in progress")
 	ErrRetryInvalid              = errors.New("payment attempt cannot be retried")
 	ErrPaymentUnknown            = errors.New("paid request result is unknown; do not create a new payment intent")
+	ErrOnSignedFailed            = errors.New("on-signed hook failed; paid request was not sent")
 )
 
 // Error is the SDK's program-readable failure. Unwrap returns the sentinel
