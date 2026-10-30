@@ -7,10 +7,10 @@ The SDK handles `402 Payment Required` → AgentPay Preflight → Wallet `paymen
 ## Install
 
 ```bash
-go get github.com/BOTChainLabs/agentpay-kernel-payer-go@v0.1.0-rc.1
+go get github.com/BOTChainLabs/agentpay-kernel-payer-go@v0.1.0
 ```
 
-During local development inside `wallet-service`, use a `replace` to this directory. Published consumers must depend on a git tag, not `replace`.
+During local development next to `wallet-service`, you may `replace` to a local checkout. Published consumers must depend on a git tag, not `replace`.
 
 ## Compatibility
 
