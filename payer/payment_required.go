@@ -54,6 +54,42 @@ func parsePaymentRequiredHeader(header string) (paymentRequired, json.RawMessage
 	return pr, append(json.RawMessage(nil), raw...), nil
 }
 
+func matchPaymentConstraints(c PaymentConstraints, pr paymentRequired, accept paymentAccept) error {
+	if strings.TrimSpace(c.ServiceID) == "" || c.ConfigVersion < 1 ||
+		strings.TrimSpace(c.Network) == "" || strings.TrimSpace(c.Asset) == "" ||
+		strings.TrimSpace(c.Amount) == "" || strings.TrimSpace(c.PayTo) == "" {
+		return wrapError(CodeConfigInvalid, ErrConfigInvalid, "PaymentConstraints fields are incomplete")
+	}
+	if serviceIDFromExtra(accept.Extra) != strings.TrimSpace(c.ServiceID) {
+		return wrapError(CodePaymentConstraintMismatch, ErrPaymentConstraintMismatch,
+			"serviceId %q does not match constraint %q", serviceIDFromExtra(accept.Extra), c.ServiceID)
+	}
+	if configVersionFromExtra(accept.Extra) != c.ConfigVersion {
+		return wrapError(CodePaymentConstraintMismatch, ErrPaymentConstraintMismatch,
+			"configVersion %d does not match constraint %d", configVersionFromExtra(accept.Extra), c.ConfigVersion)
+	}
+	if accept.Network != strings.TrimSpace(c.Network) {
+		return wrapError(CodePaymentConstraintMismatch, ErrPaymentConstraintMismatch,
+			"network %q does not match constraint %q", accept.Network, c.Network)
+	}
+	if !strings.EqualFold(accept.Asset, strings.TrimSpace(c.Asset)) {
+		return wrapError(CodePaymentConstraintMismatch, ErrPaymentConstraintMismatch,
+			"asset %q does not match constraint %q", accept.Asset, c.Asset)
+	}
+	if accept.Amount != strings.TrimSpace(c.Amount) {
+		return wrapError(CodePaymentConstraintMismatch, ErrPaymentConstraintMismatch,
+			"amount %q does not match constraint %q", accept.Amount, c.Amount)
+	}
+	if !strings.EqualFold(accept.PayTo, strings.TrimSpace(c.PayTo)) {
+		return wrapError(CodePaymentConstraintMismatch, ErrPaymentConstraintMismatch,
+			"payTo %q does not match constraint %q", accept.PayTo, c.PayTo)
+	}
+	// resource.url vs request URL is enforced separately; constraints bind the
+	// reviewed commercial terms carried in accepts / extra.
+	_ = pr
+	return nil
+}
+
 func assertCanonicalProfile(pr paymentRequired) (paymentAccept, error) {
 	if pr.X402Version != 2 {
 		return paymentAccept{}, wrapError(CodePaymentProfileUnsupported, ErrPaymentProfileUnsupported, "x402Version must be 2")

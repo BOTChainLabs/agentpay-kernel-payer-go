@@ -7,7 +7,7 @@ The SDK handles `402 Payment Required` → AgentPay Preflight → Wallet `paymen
 ## Install
 
 ```bash
-go get github.com/BOTChainLabs/agentpay-kernel-payer-go@v0.1.1
+go get github.com/BOTChainLabs/agentpay-kernel-payer-go@v0.1.2
 ```
 
 During local development next to `wallet-service`, you may `replace` to a local checkout. Published consumers must depend on a git tag, not `replace`.
@@ -91,6 +91,7 @@ func main() {
 | --- | --- |
 | `WithPaymentIntentID` | Stable Wallet Idempotency-Key / `payment-approval:{id}` suffix (explicit id ≤111 bytes; longer ids are rejected) |
 | `WithConsentEvidenceID` | Per-call consent evidence (defaults to intent id) |
+| `WithPaymentConstraints` | Reviewed Runtime Config terms checked on the single 402 |
 | `WithOnSigned` | Persist after SIGNED, before `PAYMENT-SIGNATURE`; error aborts send |
 
 ### Wallet auth modes

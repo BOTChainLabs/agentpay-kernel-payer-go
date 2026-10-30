@@ -11,6 +11,7 @@ const (
 	CodePaymentRequiredInvalid    = "PAYMENT_REQUIRED_INVALID"
 	CodePaymentProfileUnsupported = "UNSUPPORTED_PAYMENT_PROFILE"
 	CodePaymentResourceMismatch   = "PAYMENT_RESOURCE_MISMATCH"
+	CodePaymentConstraintMismatch = "PAYMENT_CONSTRAINT_MISMATCH"
 	CodePreflightBlocked          = "PREFLIGHT_BLOCKED"
 	CodePreflightUnavailable      = "PREFLIGHT_UNAVAILABLE"
 	CodeWalletUnavailable         = "WALLET_UNAVAILABLE"
@@ -29,6 +30,7 @@ var (
 	ErrPaymentRequiredInvalid    = errors.New("PAYMENT-REQUIRED header is invalid")
 	ErrPaymentProfileUnsupported = errors.New("payment profile is not exact+permit2+upfront")
 	ErrPaymentResourceMismatch   = errors.New("PAYMENT-REQUIRED resource.url does not match the request URL")
+	ErrPaymentConstraintMismatch = errors.New("PAYMENT-REQUIRED does not match caller payment constraints")
 	ErrPreflightBlocked          = errors.New("AgentPay preflight did not approve payment")
 	ErrPreflightUnavailable      = errors.New("AgentPay preflight is unavailable")
 	ErrWalletUnavailable         = errors.New("wallet service is unavailable")

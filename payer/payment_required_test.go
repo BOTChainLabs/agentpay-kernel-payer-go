@@ -3,9 +3,53 @@ package agentpaypayer
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"testing"
 )
+
+func TestMatchPaymentConstraints(t *testing.T) {
+	raw := []byte(`{
+	  "x402Version": 2,
+	  "resource": {"url": "https://agentpay.example/demo/paid-echo"},
+	  "accepts": [{
+	    "scheme": "exact",
+	    "network": "eip155:968",
+	    "asset": "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+	    "amount": "1000000",
+	    "payTo": "0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+	    "extra": {
+	      "assetTransferMethod": "permit2",
+	      "paymentFlow": "upfront",
+	      "serviceId": "svc_demo_echo",
+	      "configVersion": 1
+	    }
+	  }]
+	}`)
+	var pr paymentRequired
+	if err := json.Unmarshal(raw, &pr); err != nil {
+		t.Fatal(err)
+	}
+	accept, err := assertCanonicalProfile(pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok := PaymentConstraints{
+		ServiceID: "svc_demo_echo", ConfigVersion: 1, Network: "eip155:968",
+		Asset: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Amount: "1000000",
+		PayTo: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+	}
+	if err := matchPaymentConstraints(ok, pr, accept); err != nil {
+		t.Fatal(err)
+	}
+	bad := ok
+	bad.Amount = "1"
+	err = matchPaymentConstraints(bad, pr, accept)
+	var pe *Error
+	if !errors.As(err, &pe) || pe.Code != CodePaymentConstraintMismatch {
+		t.Fatalf("err=%v", err)
+	}
+}
 
 func TestParseAndAssertCanonicalProfile(t *testing.T) {
 	raw := []byte(`{

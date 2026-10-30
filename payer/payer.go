@@ -88,6 +88,8 @@ func (c *Client) EnsureReady(ctx context.Context, in ReadyInput) (ReadyResult, e
 //   - WithPaymentIntentID: stable Wallet idempotency / approval key (recommended
 //     for durable callers such as memex invocation_id)
 //   - WithConsentEvidenceID: per-call consent evidence override
+//   - WithPaymentConstraints: declarative Runtime Config terms checked on the
+//     single 402 (no second unpaid probe in the caller)
 //   - WithOnSigned: persist before the paid request is sent; error aborts send
 func (c *Client) FetchWithPayment(ctx context.Context, req *http.Request, opts ...FetchOption) (*http.Response, *PaymentAttempt, error) {
 	if c == nil {
@@ -121,6 +123,11 @@ func (c *Client) FetchWithPayment(ctx context.Context, req *http.Request, opts .
 	if !resourceURLMatchesRequest(pr.Resource.URL, snap.URL) {
 		return nil, nil, wrapError(CodePaymentResourceMismatch, ErrPaymentResourceMismatch,
 			"resource.url %q does not match request URL %q", pr.Resource.URL, snap.URL)
+	}
+	if fo.constraints != nil {
+		if err := matchPaymentConstraints(*fo.constraints, pr, accept); err != nil {
+			return nil, nil, err
+		}
 	}
 
 	kernelAddress, externalAgentID, err := c.walletIdentity(ctx)

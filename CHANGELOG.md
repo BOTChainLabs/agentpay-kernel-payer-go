@@ -4,6 +4,11 @@ All notable changes to this SDK are documented here.
 
 ## Unreleased
 
+## v0.1.2 — 2026-10-30
+
+- `WithPaymentConstraints`: declarative Runtime Config terms validated on the single 402 (`PAYMENT_CONSTRAINT_MISMATCH`).
+- Callers should not probe Provider unpaid before `FetchWithPayment` when constraints are available.
+
 ## v0.1.1 — 2026-10-30
 
 - `FetchWithPayment` options: `WithPaymentIntentID`, `WithConsentEvidenceID`, `WithOnSigned`.

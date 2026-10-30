@@ -601,6 +601,81 @@ func TestResolvePaymentIntentIDRejectsTooLongWithoutTruncation(t *testing.T) {
 	}
 }
 
+func TestFetchWithPaymentEnforcesPaymentConstraintsOnSingle402(t *testing.T) {
+	var providerHits atomic.Int32
+	wallet := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/v1/wallets/wal_1"):
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"wallet_id": "wal_1", "external_agent_id": "agent_1",
+				"account_address": "0x1111111111111111111111111111111111111111",
+			})
+		case strings.HasSuffix(r.URL.Path, "/payment-approvals"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"approval_token": "a", "approval_id": "approval_1"})
+		case strings.HasSuffix(r.URL.Path, "/payment-authorizations"):
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"authorization_id": "auth_c", "status": "SIGNED",
+				"payment_payload": map[string]any{"x402Version": 2},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer wallet.Close()
+	agentPay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": map[string]any{"ready": true, "payment_context_token": "context.jwt"},
+		})
+	}))
+	defer agentPay.Close()
+	var providerURL string
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerHits.Add(1)
+		if r.Header.Get(PaymentSignatureHeader) == "" {
+			raw, _ := json.Marshal(paymentRequiredFixture(providerURL + "/demo/paid-echo"))
+			w.Header().Set(PaymentRequiredHeader, base64.StdEncoding.EncodeToString(raw))
+			w.WriteHeader(http.StatusPaymentRequired)
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer provider.Close()
+	providerURL = provider.URL
+
+	client, err := New(Config{
+		WalletBaseURL: wallet.URL, AgentPayBaseURL: agentPay.URL,
+		APIKey: "wallet-key", WalletID: "wal_1", HTTPClient: &http.Client{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest(http.MethodPost, provider.URL+"/demo/paid-echo", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	_, _, err = client.FetchWithPayment(context.Background(), req, WithPaymentConstraints(PaymentConstraints{
+		ServiceID: "svc_demo_echo", ConfigVersion: 1, Network: "eip155:968",
+		Asset: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Amount: "1000000",
+		PayTo: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if providerHits.Load() != 2 { // one 402 + one paid
+		t.Fatalf("providerHits=%d", providerHits.Load())
+	}
+	req2, _ := http.NewRequest(http.MethodPost, provider.URL+"/demo/paid-echo", strings.NewReader(`{}`))
+	req2.Header.Set("Content-Type", "application/json")
+	_, _, err = client.FetchWithPayment(context.Background(), req2, WithPaymentConstraints(PaymentConstraints{
+		ServiceID: "svc_other", ConfigVersion: 1, Network: "eip155:968",
+		Asset: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Amount: "1000000",
+		PayTo: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+	}))
+	var pe *Error
+	if !errors.As(err, &pe) || pe.Code != CodePaymentConstraintMismatch {
+		t.Fatalf("err=%v", err)
+	}
+}
+
 func TestFetchWithPaymentUsesStableIntentAndOnSignedBeforePaidRequest(t *testing.T) {
 	const intentID = "inv_stable_001"
 	var (

@@ -46,7 +46,22 @@ type FetchOption func(*fetchOptions)
 type fetchOptions struct {
 	paymentIntentID   string
 	consentEvidenceID string
+	constraints       *PaymentConstraints
 	onSigned          func(context.Context, *PaymentAttempt) error
+}
+
+// PaymentConstraints are declarative terms the caller already reviewed
+// (for example a stored Runtime Config). When set via WithPaymentConstraints,
+// FetchWithPayment validates them against the single 402 PAYMENT-REQUIRED
+// before Preflight. Prefer this over a second unpaid probe or a free-form
+// validator callback.
+type PaymentConstraints struct {
+	ServiceID     string
+	ConfigVersion int
+	Network       string
+	Asset         string
+	Amount        string
+	PayTo         string
 }
 
 // WithPaymentIntentID sets the stable Wallet Idempotency-Key for
@@ -66,6 +81,15 @@ func WithPaymentIntentID(id string) FetchOption {
 func WithConsentEvidenceID(id string) FetchOption {
 	return func(o *fetchOptions) {
 		o.consentEvidenceID = id
+	}
+}
+
+// WithPaymentConstraints asks FetchWithPayment to enforce reviewed payment
+// terms on the first (and only) 402 response.
+func WithPaymentConstraints(c PaymentConstraints) FetchOption {
+	return func(o *fetchOptions) {
+		cp := c
+		o.constraints = &cp
 	}
 }
 
